@@ -3144,12 +3144,15 @@ function textoEstadoCuenta(c, n, pendientes, anticipos, sinAplicar) {
 }
 async function imprimirEstadoCuenta(clienteId) {
   const [c, movs, imps, n] = await Promise.all([store.cliente(clienteId), store.ccMovimientos(clienteId), store.ccImputaciones(clienteId).catch(() => []), store.negocio()]);
-  const { grupos } = deudaPorConcepto(movs, imps);
+  const { grupos, aplicaciones } = deudaPorConcepto(movs, imps);
   const pendientes = grupos.filter(g => g.pendiente > 0.009).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
   const anticipos = grupos.filter(g => g.encargo_id && g.pendiente < -0.009);
   const sinAplicar = movs.filter(m => m.tipo === 'ajuste' && m.manual && m.imputa_deuda === false).reduce((s, m) => s - m.monto, 0);
   const total = pendientes.reduce((s, g) => s + g.pendiente, 0);
-  const pagos = movs.filter(m => m.tipo === 'pago' && !m.anulado).slice(0, 5);   // los últimos (vienen de la más nueva a la más vieja)
+  // los pagos a cuenta que ya se aplicaron a cada concepto que todavía tiene saldo (fecha e importe)
+  const pagosDe = g => Object.entries(aplicaciones).flatMap(([id, l]) => l.filter(a => a.grupo === g.clave).map(a => ({ m: movs.find(x => x.id === +id), monto: a.monto })))
+    .filter(x => x.m).sort((a, b) => String(a.m.fecha).localeCompare(String(b.m.fecha)))
+    .map(x => `${x.m.tipo === 'pago' ? 'Pago a cuenta' : 'Saldo a favor aplicado'} ${fdate(x.m.fecha)}: ${money(x.monto)}`).join(' · ');
   // los productos de cada venta pendiente
   const ventas = new Map(await Promise.all([...new Set(pendientes.map(g => g.venta_id).filter(Boolean))].map(async id => [id, await store.venta(id).catch(() => null)])));
   const productos = g => (ventas.get(g.venta_id)?.items || []).map(i => `${+i.cantidad !== 1 ? `${+i.cantidad} × ` : ''}${esc(i.descripcion)}`).join(' · ');
@@ -3162,14 +3165,12 @@ async function imprimirEstadoCuenta(clienteId) {
     <h1>Estado de cuenta</h1>
     <div class="ped-sub">${[`Cliente: <b>${esc(c.nombre)}</b>`, c.dni_cuit && `CUIT/DNI: ${esc(c.dni_cuit)}`, `al ${hoy}`].filter(Boolean).join(' · ')}</div>
     ${pendientes.length ? `<table class="ped-tbl"><thead><tr><th>Fecha</th><th style="width:52%">Concepto</th><th class="num">Total</th><th class="num">Pagado</th><th class="num">Pendiente</th></tr></thead><tbody>
-      ${pendientes.map(g => `<tr><td class="nowrap">${fdate(g.fecha)}</td><td>${esc(g.concepto)}${g.venta_id && productos(g) ? `<div style="font-size:8.5pt;color:#444">${productos(g)}</div>` : ''}</td>
+      ${pendientes.map(g => `<tr><td class="nowrap">${fdate(g.fecha)}</td><td>${esc(g.concepto)}${g.venta_id && productos(g) ? `<div style="font-size:8.5pt;color:#444">${productos(g)}</div>` : ''}${g.pagado > 0.009 && pagosDe(g) ? `<div style="font-size:8.5pt;color:#444">${pagosDe(g)}</div>` : ''}</td>
         <td class="num nowrap">${money(g.total)}</td><td class="num nowrap">${g.pagado > 0.009 ? money(g.pagado) : '—'}</td><td class="num nowrap"><b>${money(g.pendiente)}</b></td></tr>`).join('')}
       <tr><td colspan="4" style="font-size:12pt;border-bottom:0"><b>TOTAL ADEUDADO</b></td><td class="num nowrap" style="font-size:12pt;border-bottom:0"><b>${money(total)}</b></td></tr></tbody></table>`
     : '<p style="font-size:12pt;margin:4mm 0"><b>No tiene deuda pendiente.</b></p>'}
     ${anticipos.map(g => `<p style="font-size:9.5pt;margin-top:2mm">Además tiene <b>${money(-g.pendiente)}</b> de anticipo (${esc(g.concepto)}), que se descuenta al entregarlo.</p>`).join('')}
     ${sinAplicar > 0.009 ? `<p style="font-size:9.5pt;margin-top:2mm">Además tiene <b>${money(sinAplicar)}</b> a favor.</p>` : ''}
-    ${pagos.length ? `<div style="font-size:10.5pt;margin:6mm 0 1mm"><b>Últimos pagos recibidos</b></div><table class="ped-tbl"><tbody>
-      ${pagos.map(p => `<tr><td class="nowrap" style="width:25mm">${fdate(p.fecha)}</td><td>${esc(p.forma_pago || '')}</td><td class="num nowrap">${money(-p.monto)}</td></tr>`).join('')}</tbody></table>` : ''}
     <p style="font-size:8.5pt;color:#555;margin-top:8mm">Documento no válido como factura. Ante cualquier diferencia, comunicate con nosotros${n.telefono ? ` al ${esc(n.telefono)}` : ''}.</p>
   </div>`, PAGINA_A4);
 }
