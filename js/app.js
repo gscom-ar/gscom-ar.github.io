@@ -2930,7 +2930,7 @@ async function cuentaCliente(clienteId) {
   const TIPO = { cargo: ['Cargo', 'amber'], pago: ['Pago', 'green'], ajuste: ['Ajuste', 'gray'] };
   view().innerHTML = `
   <div class="page-head"><div><a href="#/fichero" class="small muted">← Fichero</a><h1>${esc(c.nombre)}</h1></div>
-    <div class="actions"><a class="btn" href="#/clientes/${c.id}">Ficha del cliente</a><button class="btn" id="cargo">+ Cargar deuda</button><button class="btn" id="cargo-favor">+ Saldo a favor</button>
+    <div class="actions"><a class="btn" href="#/clientes/${c.id}">Ficha del cliente</a><button class="btn" id="estado-pdf" title="Lo que debe, concepto por concepto, para imprimir o guardar en PDF">🖨 Estado de cuenta</button>${c.telefono ? '<a class="btn wa" id="estado-wa" target="_blank" rel="noopener" title="Le manda por WhatsApp el resumen de lo que debe">Enviar por WhatsApp</a>' : '<button class="btn" disabled title="El cliente no tiene teléfono cargado (se carga en la ficha del cliente)">Enviar por WhatsApp</button>'}<button class="btn" id="cargo">+ Cargar deuda</button><button class="btn" id="cargo-favor">+ Saldo a favor</button>
       <button class="btn ok" id="cobrar" ${cobrable > 0.009 ? '' : 'title="No debe nada: se registra como pago a cuenta (queda a favor del cliente)"'}>Cobrar</button></div></div>
   <div class="grid grid-3" style="margin-bottom:1rem">
     <div class="card kpi"><div class="label">Total compras</div><div class="value">${money(totalCompras)}</div></div>
@@ -2963,6 +2963,8 @@ async function cuentaCliente(clienteId) {
   $('#cobrar').onclick = () => run(() => cobrarModal(c.id, c.nombre, saldo, render));
   $$('[data-cobrar-uno]').forEach(b => b.onclick = () => run(() => cobrarModal(c.id, c.nombre, saldo, render, b.dataset.cobrarUno)));
   $('#cargo').onclick = () => cargoManualModal(c.id);
+  $('#estado-pdf').onclick = () => run(() => imprimirEstadoCuenta(c.id));
+  if ($('#estado-wa')) store.negocio().then(n => { $('#estado-wa').href = waLink(c.telefono, textoEstadoCuenta(c, n, pendientes, anticipos, sinAplicar)); }).catch(() => {});
   $('#cargo-favor').onclick = () => cargoManualModal(c.id, 'favor');
   $$('[data-venta]').forEach(a => a.onclick = e => { e.preventDefault(); ventaModal(+a.dataset.venta); });
   $$('[data-precios]').forEach(b => b.onclick = () => preciosVentaModal(+b.dataset.precios, subas.get(+b.dataset.precios), render));
@@ -3123,6 +3125,53 @@ async function recargosAFacturar() {
     const proporcional = Math.round(+m.recargo * Math.min(parte / -m.monto, 1) * 100) / 100;
     return { ...m, monto_factura: m.facturacion === 'emitida' ? proporcional || +m.recargo : proporcional };
   }).filter(m => m.facturacion === 'emitida' || m.monto_factura > 0.009);
+}
+
+// ---------------------------------------------------------------------
+// Estado de cuenta para el cliente: lo que debe, concepto por concepto (PDF y WhatsApp). Sin datos internos (costos, notas).
+// ---------------------------------------------------------------------
+const detallePendiente = g => g.pagado > 0.009 ? ` (de ${money(g.total)}, pagó ${money(g.pagado)})` : '';
+function textoEstadoCuenta(c, n, pendientes, anticipos, sinAplicar) {
+  const total = pendientes.reduce((s, g) => s + g.pendiente, 0);
+  const nombre = c.nombre?.includes(',') ? c.nombre.split(',')[1].trim().split(/\s+/)[0] || c.nombre : c.nombre;   // 'Pérez, Juan' → Juan; una empresa, con su nombre completo
+  const lineas = pendientes.slice().sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)))
+    .map(g => `• ${g.concepto} del ${fdate(g.fecha)}: ${money(g.pendiente)}${detallePendiente(g)}`);
+  return [`Hola ${nombre}! Te paso el estado de tu cuenta en ${n.nombre} al ${fdate(new Date().toISOString())}:`, '',
+    ...(lineas.length ? [...lineas, '', `*Total adeudado: ${money(total)}*`] : ['No tenés deuda pendiente. ¡Gracias!']),
+    ...anticipos.map(g => `Además tenés ${money(-g.pendiente)} de anticipo (${g.concepto}), que se descuenta al entregarlo.`),
+    ...(sinAplicar > 0.009 ? [`Además tenés ${money(sinAplicar)} a favor.`] : []),
+    '', 'Cualquier consulta, avisanos. ¡Gracias!'].join('\n');
+}
+async function imprimirEstadoCuenta(clienteId) {
+  const [c, movs, imps, n] = await Promise.all([store.cliente(clienteId), store.ccMovimientos(clienteId), store.ccImputaciones(clienteId).catch(() => []), store.negocio()]);
+  const { grupos } = deudaPorConcepto(movs, imps);
+  const pendientes = grupos.filter(g => g.pendiente > 0.009).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  const anticipos = grupos.filter(g => g.encargo_id && g.pendiente < -0.009);
+  const sinAplicar = movs.filter(m => m.tipo === 'ajuste' && m.manual && m.imputa_deuda === false).reduce((s, m) => s - m.monto, 0);
+  const total = pendientes.reduce((s, g) => s + g.pendiente, 0);
+  const pagos = movs.filter(m => m.tipo === 'pago' && !m.anulado).slice(0, 5);   // los últimos (vienen de la más nueva a la más vieja)
+  // los productos de cada venta pendiente
+  const ventas = new Map(await Promise.all([...new Set(pendientes.map(g => g.venta_id).filter(Boolean))].map(async id => [id, await store.venta(id).catch(() => null)])));
+  const productos = g => (ventas.get(g.venta_id)?.items || []).map(i => `${+i.cantidad !== 1 ? `${+i.cantidad} × ` : ''}${esc(i.descripcion)}`).join(' · ');
+  const hoy = fdate(new Date().toISOString());
+  const titulo = document.title;
+  document.title = `Estado de cuenta - ${c.nombre} - ${new Date().toLocaleDateString('sv')}`;
+  window.addEventListener('afterprint', function volver() { window.removeEventListener('afterprint', volver); document.title = titulo; });
+  printHTML(`<div class="hoja-pedido">
+    <div class="ped-head"><b>${esc(n.nombre)}</b>${n.direccion ? ` · ${esc(n.direccion)}` : ''}${n.telefono ? ` · Tel ${esc(n.telefono)}` : ''}</div>
+    <h1>Estado de cuenta</h1>
+    <div class="ped-sub">${[`Cliente: <b>${esc(c.nombre)}</b>`, c.dni_cuit && `CUIT/DNI: ${esc(c.dni_cuit)}`, `al ${hoy}`].filter(Boolean).join(' · ')}</div>
+    ${pendientes.length ? `<table class="ped-tbl"><thead><tr><th>Fecha</th><th style="width:52%">Concepto</th><th class="num">Total</th><th class="num">Pagado</th><th class="num">Pendiente</th></tr></thead><tbody>
+      ${pendientes.map(g => `<tr><td class="nowrap">${fdate(g.fecha)}</td><td>${esc(g.concepto)}${g.venta_id && productos(g) ? `<div style="font-size:8.5pt;color:#444">${productos(g)}</div>` : ''}</td>
+        <td class="num nowrap">${money(g.total)}</td><td class="num nowrap">${g.pagado > 0.009 ? money(g.pagado) : '—'}</td><td class="num nowrap"><b>${money(g.pendiente)}</b></td></tr>`).join('')}
+      <tr><td colspan="4" style="font-size:12pt;border-bottom:0"><b>TOTAL ADEUDADO</b></td><td class="num nowrap" style="font-size:12pt;border-bottom:0"><b>${money(total)}</b></td></tr></tbody></table>`
+    : '<p style="font-size:12pt;margin:4mm 0"><b>No tiene deuda pendiente.</b></p>'}
+    ${anticipos.map(g => `<p style="font-size:9.5pt;margin-top:2mm">Además tiene <b>${money(-g.pendiente)}</b> de anticipo (${esc(g.concepto)}), que se descuenta al entregarlo.</p>`).join('')}
+    ${sinAplicar > 0.009 ? `<p style="font-size:9.5pt;margin-top:2mm">Además tiene <b>${money(sinAplicar)}</b> a favor.</p>` : ''}
+    ${pagos.length ? `<div style="font-size:10.5pt;margin:6mm 0 1mm"><b>Últimos pagos recibidos</b></div><table class="ped-tbl"><tbody>
+      ${pagos.map(p => `<tr><td class="nowrap" style="width:25mm">${fdate(p.fecha)}</td><td>${esc(p.forma_pago || '')}</td><td class="num nowrap">${money(-p.monto)}</td></tr>`).join('')}</tbody></table>` : ''}
+    <p style="font-size:8.5pt;color:#555;margin-top:8mm">Documento no válido como factura. Ante cualquier diferencia, comunicate con nosotros${n.telefono ? ` al ${esc(n.telefono)}` : ''}.</p>
+  </div>`, PAGINA_A4);
 }
 
 // Cobro de cuenta corriente: elegir qué conceptos se pagan (todo, uno o parte) o un monto libre
