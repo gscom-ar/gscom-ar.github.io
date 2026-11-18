@@ -1741,7 +1741,7 @@ async function fichaCliente(id) {
 
   view().innerHTML = `
   <div class="page-head"><div><a href="#/clientes" class="small muted">← Clientes</a><h1>${esc(c.nombre)}</h1></div>
-    <div class="actions"><a class="btn" href="#/vender?cliente=${c.id}">Nueva venta</a><button class="btn primary" id="orden">Nueva reparación</button></div></div>
+    <div class="actions">${c.cuenta_corriente || cc.length ? `<a class="btn" href="#/fichero/${c.id}" title="Su cuenta en el Fichero: lo que debe, cobros, estado de cuenta">Ver cuenta corriente</a>` : ''}<a class="btn" href="#/vender?cliente=${c.id}">Nueva venta</a><button class="btn primary" id="orden">Nueva reparación</button></div></div>
   <div class="grid grid-4" style="margin-bottom:1rem">
     <a class="card kpi" href="#/fichero/${c.id}" style="text-decoration:none;color:inherit"><div class="label">Cuenta corriente</div>
       <div class="value" style="${saldo > 0 ? 'color:var(--bad)' : ''}">${money(saldo)}</div><div class="sub">${saldo > 0 ? 'adeuda · ver / cobrar →' : cc.length ? 'al día · ver movimientos →' : 'sin movimientos'}</div></a>
