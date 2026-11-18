@@ -2929,7 +2929,7 @@ async function cuentaCliente(clienteId) {
   const conSaldo = movs.slice().reverse().map(m => ({ ...m, acum: (acum += +m.monto) })).reverse();
   const TIPO = { cargo: ['Cargo', 'amber'], pago: ['Pago', 'green'], ajuste: ['Ajuste', 'gray'] };
   view().innerHTML = `
-  <div class="page-head"><div><a href="#/fichero" class="small muted">← Fichero</a><h1>${esc(c.nombre)}</h1></div>
+  <div class="page-head apilada"><div><a href="#/fichero" class="small muted">← Fichero</a><h1>${esc(c.nombre)}</h1></div>
     <div class="actions"><a class="btn" href="#/clientes/${c.id}">Ficha del cliente</a><button class="btn" id="estado-pdf" title="Lo que debe, concepto por concepto, para imprimir o guardar en PDF">🖨 Estado de cuenta</button>${c.telefono ? '<a class="btn wa" id="estado-wa" target="_blank" rel="noopener" title="Le manda por WhatsApp el resumen de lo que debe">Enviar por WhatsApp</a>' : '<button class="btn" disabled title="El cliente no tiene teléfono cargado (se carga en la ficha del cliente)">Enviar por WhatsApp</button>'}<button class="btn" id="cargo">+ Cargar deuda</button><button class="btn" id="cargo-favor">+ Saldo a favor</button>
       <button class="btn ok" id="cobrar" ${cobrable > 0.009 ? '' : 'title="No debe nada: se registra como pago a cuenta (queda a favor del cliente)"'}>Cobrar</button></div></div>
   <div class="grid grid-3" style="margin-bottom:1rem">
